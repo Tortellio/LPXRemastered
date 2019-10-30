@@ -1,0 +1,230 @@
+﻿using Rocket.API;
+using Rocket.Unturned.Chat;
+using Rocket.Unturned.Player;
+using SDG.Unturned;
+using System.Collections.Generic;
+using UnityEngine;
+using fr34kyn01535.Uconomy;
+
+namespace LPXRemastered
+{
+    public class CommandSell : IRocketCommand
+    {
+        public AllowedCaller AllowedCaller
+        {
+            get
+            {
+                return AllowedCaller.Player;
+            }
+        }
+        public string Name
+        {
+            get
+            {
+                return "sell";
+            }
+        }
+        public string Help
+        {
+            get
+            {
+                return "Allows you to sell items to the shop from your inventory.";
+            }
+        }
+        public string Syntax
+        {
+            get
+            {
+                return "<name or id> [amount]";
+            }
+        }
+        public List<string> Aliases
+        {
+            get { return new List<string>(); }
+        }
+        public List<string> Permissions
+        {
+            get 
+            {
+                return new List<string>() {"sell"};
+            }
+        }
+        public void Execute(IRocketPlayer caller, params string[] command)
+        {
+            if (!LPXRemastered.Instance.Configuration.Instance.EnableShop)
+            {
+                UnturnedChat.Say(caller, LPXRemastered.Instance.Translate("shop_disable"));
+                return;
+            }
+            UnturnedPlayer player = (UnturnedPlayer)caller;
+            if (command.Length == 0)
+            {
+                UnturnedChat.Say(player, LPXRemastered.Instance.Translate("sell_command_usage"));
+                return;
+            }
+            byte amttosell = 1;
+            byte amt = amttosell;
+            if (!LPXRemastered.Instance.Configuration.Instance.CanSellItems)
+            {
+                UnturnedChat.Say(player, LPXRemastered.Instance.Translate("sell_items_off"));
+                return;
+            }
+            string name = null;
+            ItemAsset vAsset = null;
+            string ItemName = "";
+            bool HaveAmt = false;
+            if (command.Length > 1)
+            {
+                HaveAmt = byte.TryParse(command[command.Length - 1], out amt);
+                if (!HaveAmt)
+                {
+                    amt = 1;
+                    if (command.Length == 2)
+                        ItemName = command[0] + " " + command[1];
+                    else if (command.Length == 1)
+                        ItemName = command[0];
+                }
+                else
+                {
+                    for (int i = 0; i < (command.Length - 1); i++)
+                    {
+                        if (i == (command.Length - 2))
+                            ItemName += command[i];
+                        else
+                            ItemName += command[i] + " ";
+                    }
+                }
+            }
+            else
+                ItemName = command[0].Trim();
+            amttosell = amt;
+            if (!ushort.TryParse(ItemName, out ushort id))
+            {
+                Asset[] array = Assets.find(EAssetType.ITEM);
+                Asset[] array2 = array;
+                for (int i = 0; i < array2.Length; i++)
+                {
+                    vAsset = (ItemAsset)array2[i];
+                    if (vAsset != null && vAsset.name != null && vAsset.name.ToLower().Contains(ItemName.ToLower()))
+                    {
+                        id = vAsset.id;
+                        name = vAsset.name;
+                        break;
+                    }
+                }
+            }
+            if (name == null && id == 0)
+            {
+                UnturnedChat.Say(player, LPXRemastered.Instance.Translate("could_not_find", ItemName));
+                return;
+            }
+            else if (name == null && id != 0)
+            {
+                try
+                {
+                    vAsset = (ItemAsset)Assets.find(EAssetType.ITEM, id);
+                    name = vAsset.name;
+                }
+                catch
+                {
+                    UnturnedChat.Say(player, LPXRemastered.Instance.Translate("item_invalid"));
+                    return;
+                }
+            }
+            if (player.Inventory.has(id) == null)
+            {
+                UnturnedChat.Say(player, LPXRemastered.Instance.Translate("not_have_item_sell", name));
+                return;
+            }
+            List<InventorySearch> list = player.Inventory.search(id, true, true);
+            if (list.Count == 0 || (vAsset.amount == 1 && list.Count < amttosell))
+            {
+                UnturnedChat.Say(player, LPXRemastered.Instance.Translate("not_enough_items_sell", amttosell.ToString(), name));
+                return;
+            }
+            if (vAsset.amount > 1)
+            {
+                int ammomagamt = 0;
+                foreach (InventorySearch ins in list)
+                {
+                    ammomagamt += ins.jar.item.amount;
+                }
+                if (ammomagamt < amttosell)
+                {
+                    UnturnedChat.Say(player, LPXRemastered.Instance.Translate("not_enough_ammo_sell", name));
+                    return;
+                }
+            }
+            // We got this far, so let's buy back the items and give them money.
+            // Get cost per item.  This will be whatever is set for most items, but changes for ammo and magazines.
+            decimal price = LPXRemastered.Instance.ShopDB.GetItemBuyPrice(id);
+            if (price <= 0.00m)
+            {
+                UnturnedChat.Say(player, LPXRemastered.Instance.Translate("no_sell_price_set", name));
+                return;
+            }
+            byte quality = 100;
+            decimal peritemprice = 0;
+            decimal addmoney = 0;
+            switch (vAsset.amount)
+            {
+                case 1:
+                    // These are single items, not ammo or magazines
+                    while (amttosell > 0)
+                    {
+                        if (player.Player.equipment.checkSelection(list[0].page, list[0].jar.x, list[0].jar.y))
+                        {
+                            player.Player.equipment.dequip();
+                        }
+                        if (LPXRemastered.Instance.Configuration.Instance.QualityCounts)
+                            quality = list[0].jar.item.durability;
+                        peritemprice = decimal.Round(price * (quality / 100.0m), 2);
+                        addmoney += peritemprice;
+                        player.Inventory.removeItem(list[0].page, player.Inventory.getIndex(list[0].page, list[0].jar.x, list[0].jar.y));
+                        list.RemoveAt(0);
+                        amttosell--;
+                    }
+                    break;
+                default:
+                    // This is ammo or magazines
+                    byte amttosell1 = amttosell;
+                    while (amttosell > 0)
+                    {
+                        if (player.Player.equipment.checkSelection(list[0].page, list[0].jar.x, list[0].jar.y))
+                        {
+                            player.Player.equipment.dequip();
+                        }
+                        if (list[0].jar.item.amount >= amttosell)
+                        {
+                            byte left = (byte)(list[0].jar.item.amount - amttosell);
+                            list[0].jar.item.amount = left;
+                            player.Inventory.sendUpdateAmount(list[0].page, list[0].jar.x, list[0].jar.y, left);
+                            amttosell = 0;
+                            if (left == 0)
+                            {
+                                player.Inventory.removeItem(list[0].page, player.Inventory.getIndex(list[0].page, list[0].jar.x, list[0].jar.y));
+                                list.RemoveAt(0);
+                            }
+                        }
+                        else
+                        {
+                            amttosell -= list[0].jar.item.amount;
+                            player.Inventory.sendUpdateAmount(list[0].page, list[0].jar.x, list[0].jar.y, 0);
+                            player.Inventory.removeItem(list[0].page, player.Inventory.getIndex(list[0].page, list[0].jar.x, list[0].jar.y));
+                            list.RemoveAt(0);
+                        }
+                    }
+                    peritemprice = decimal.Round(price * ((decimal)amttosell1 / vAsset.amount), 2);
+                    addmoney += peritemprice;
+                    break;
+            }
+            decimal balance = Uconomy.Instance.Database.IncreaseBalance(player.Id, addmoney);
+            OnShopSell?.Invoke(player, addmoney, amttosell, id);
+            player.Player.gameObject.SendMessage("ZaupShopOnSell", new object[] { player, addmoney, amt, id }, SendMessageOptions.DontRequireReceiver);
+            UnturnedChat.Say(player, LPXRemastered.Instance.Translate("sold_items",amt, name, addmoney, Uconomy.Instance.Configuration.Instance.MoneyName, balance, Uconomy.Instance.Configuration.Instance.MoneyName));
+        }
+        public delegate void PlayerShopSell(UnturnedPlayer player, decimal amt, byte items, ushort item);
+        public event PlayerShopSell OnShopSell;
+    }
+
+}

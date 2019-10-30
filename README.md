@@ -1,2 +1,4 @@
-# LPXRemastered
- Fixed LPX plugin for Unturned Rocketmod
+# LPX
+LPXRemastered for Rocket
+
+Fixed LPX for Unturned Rocketmod
